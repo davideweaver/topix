@@ -1,0 +1,22 @@
+#!/usr/bin/env node
+
+/**
+ * Topix CLI Development Wrapper
+ * Usage: ./dtopix <command> [options]
+ * Example: ./dtopix start
+ */
+
+const { spawn } = require('child_process');
+const { join } = require('path');
+
+const args = process.argv.slice(2);
+const cliPath = join(__dirname, 'dist', 'index.js');
+
+const child = spawn('node', [cliPath, ...args], {
+  stdio: 'inherit',
+  cwd: __dirname,
+});
+
+child.on('exit', (code) => {
+  process.exit(code || 0);
+});

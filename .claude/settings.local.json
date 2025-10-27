@@ -1,0 +1,9 @@
+{
+  "disabledMcpjsonServers": [
+    "puppeteer",
+    "macos-mail",
+    "video-transcription",
+    "nocodb",
+    "n8n-mcp"
+  ]
+}
