@@ -84,7 +84,6 @@ export class ExamplePlugin implements TopixPlugin {
       tags: ['example', 'sample'],
       importanceScore: 0.5,
       importanceReason: 'Example headline',
-      isImportant: false,
       metadata: {
         source: 'example-plugin',
       },

@@ -146,6 +146,8 @@ export class WeatherPlugin implements TopixPlugin {
       // Try to generate AI headline
       const llmService = new LLMService(db);
       headlineText = await llmService.generateText(prompt);
+      // Strip surrounding quotes if LLM included them
+      headlineText = headlineText.replace(/^["']|["']$/g, '').trim();
     } catch (error) {
       // Fallback to simple headline if LLM fails
       console.warn('Failed to generate AI headline, using fallback:', error);
@@ -164,7 +166,6 @@ export class WeatherPlugin implements TopixPlugin {
       category: 'weather',
       tags: ['weather', 'forecast', 'ai-generated'],
       importanceScore: 0.5,
-      isImportant: false,
       metadata: {
         temperature: weatherData.current.temperature,
         weatherCode: weatherData.current.weatherCode,

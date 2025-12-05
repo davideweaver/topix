@@ -27,6 +27,7 @@ const execAsync = promisify(exec);
 interface CalendarConfig {
   workCalendar: string; // No default - user must select
   personalCalendar: string; // No default - user must select
+  excludeEventTitles?: string[]; // Event titles to filter out
   llmPromptToday?: string;
   llmPromptPersonalWeek?: string;
   llmPromptWorkWeek?: string;
@@ -39,6 +40,7 @@ interface CalendarEvent {
   endDate?: Date;
   calendar: string;
   location?: string;
+  isAllDay?: boolean; // True for all-day events
 }
 
 export class CalendarPlugin implements TopixPlugin {
@@ -60,9 +62,7 @@ export class CalendarPlugin implements TopixPlugin {
     try {
       await execAsync('which icalBuddy');
     } catch (error) {
-      throw new Error(
-        'icalBuddy is not installed. Install with: brew install ical-buddy'
-      );
+      throw new Error('icalBuddy is not installed. Install with: brew install ical-buddy');
     }
 
     // Validate calendars exist
@@ -149,7 +149,10 @@ export class CalendarPlugin implements TopixPlugin {
   private async fetchEvents(command: string): Promise<CalendarEvent[]> {
     try {
       // Use -iep to include event properties (title,datetime) for proper time parsing
-      const { stdout } = await execAsync(`icalBuddy -n -iep "title,datetime" ${command} 2>/dev/null`);
+      // Use -ea to exclude all-day events
+      const { stdout } = await execAsync(
+        `icalBuddy -n -ea -iep "title,datetime" ${command} 2>/dev/null`
+      );
       return this.parseIcalBuddyOutput(stdout);
     } catch (error) {
       console.error('Failed to fetch events:', error);
@@ -217,9 +220,10 @@ export class CalendarPlugin implements TopixPlugin {
 
       // Check if this is a date/time line (no key, just date info)
       if (!propertyMatch && trimmed.length > 0) {
-        const dateTimeStr = this.parseDateTimeLine(trimmed);
-        if (dateTimeStr) {
-          currentEvent.date = dateTimeStr;
+        const dateTimeInfo = this.parseDateTimeLine(trimmed);
+        if (dateTimeInfo) {
+          currentEvent.date = dateTimeInfo.date;
+          currentEvent.isAllDay = dateTimeInfo.isAllDay;
         }
       }
     }
@@ -234,8 +238,9 @@ export class CalendarPlugin implements TopixPlugin {
 
   /**
    * Parse a date/time line from icalBuddy output
+   * Returns both the date and whether this is an all-day event
    */
-  private parseDateTimeLine(line: string): Date | null {
+  private parseDateTimeLine(line: string): { date: Date; isAllDay: boolean } | null {
     // Try various date formats from icalBuddy
 
     // Format: "tomorrow at 1:00 PM - 4:00 PM"
@@ -260,9 +265,9 @@ export class CalendarPlugin implements TopixPlugin {
         if (ampm === 'PM' && hours !== 12) hours += 12;
         if (ampm === 'AM' && hours === 12) hours = 0;
         dayAfter.setHours(hours, parseInt(minute), 0, 0);
-        return dayAfter;
+        return { date: dayAfter, isAllDay: false };
       }
-      return dayAfter;
+      return { date: dayAfter, isAllDay: true };
     }
 
     // Check for "tomorrow"
@@ -277,22 +282,23 @@ export class CalendarPlugin implements TopixPlugin {
         if (ampm === 'PM' && hours !== 12) hours += 12;
         if (ampm === 'AM' && hours === 12) hours = 0;
         tomorrow.setHours(hours, parseInt(minute), 0, 0);
-        return tomorrow;
+        return { date: tomorrow, isAllDay: false };
       }
-      return tomorrow;
+      return { date: tomorrow, isAllDay: true };
     }
 
     // Check for explicit date format: "2025-10-28 07:00"
     const dateMatch = line.match(/(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})/);
     if (dateMatch) {
       const [, year, month, day, hour, minute] = dateMatch;
-      return new Date(
+      const date = new Date(
         parseInt(year),
         parseInt(month) - 1,
         parseInt(day),
         parseInt(hour),
         parseInt(minute)
       );
+      return { date, isAllDay: false };
     }
 
     // Check for "today at HH:MM"
@@ -306,12 +312,12 @@ export class CalendarPlugin implements TopixPlugin {
         if (ampm === 'PM' && hours !== 12) hours += 12;
         if (ampm === 'AM' && hours === 12) hours = 0;
         today.setHours(hours, parseInt(minute), 0, 0);
-        return today;
+        return { date: today, isAllDay: false };
       }
-      return today;
+      return { date: today, isAllDay: true };
     }
 
-    // Check for simple time format: "1:00 PM - 1:45 PM" (today's events)
+    // Check for simple time format: "1:00 PM - 1:45 PM" (today's events, 12-hour)
     const simpleTimeMatch = line.match(/^\s*(\d{1,2}):(\d{2})\s*(AM|PM)/);
     if (simpleTimeMatch) {
       const [, hour, minute, ampm] = simpleTimeMatch;
@@ -320,7 +326,16 @@ export class CalendarPlugin implements TopixPlugin {
       if (ampm === 'PM' && hours !== 12) hours += 12;
       if (ampm === 'AM' && hours === 12) hours = 0;
       today.setHours(hours, parseInt(minute), 0, 0);
-      return today;
+      return { date: today, isAllDay: false };
+    }
+
+    // Check for 24-hour format: "12:30 - 13:00" (today's events, 24-hour)
+    const time24Match = line.match(/^\s*(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})/);
+    if (time24Match) {
+      const [, hour, minute] = time24Match;
+      const today = new Date(now);
+      today.setHours(parseInt(hour), parseInt(minute), 0, 0);
+      return { date: today, isAllDay: false };
     }
 
     // Check for "Oct 31, 2025" or "Oct 31, 2025 at 2:00 PM" format
@@ -330,8 +345,18 @@ export class CalendarPlugin implements TopixPlugin {
 
       // Map month abbreviations to numbers
       const monthMap: { [key: string]: number } = {
-        'Jan': 0, 'Feb': 1, 'Mar': 2, 'Apr': 3, 'May': 4, 'Jun': 5,
-        'Jul': 6, 'Aug': 7, 'Sep': 8, 'Oct': 9, 'Nov': 10, 'Dec': 11
+        Jan: 0,
+        Feb: 1,
+        Mar: 2,
+        Apr: 3,
+        May: 4,
+        Jun: 5,
+        Jul: 6,
+        Aug: 7,
+        Sep: 8,
+        Oct: 9,
+        Nov: 10,
+        Dec: 11,
       };
 
       const month = monthMap[monthStr];
@@ -346,9 +371,10 @@ export class CalendarPlugin implements TopixPlugin {
           if (ampm === 'PM' && hours !== 12) hours += 12;
           if (ampm === 'AM' && hours === 12) hours = 0;
           date.setHours(hours, parseInt(minute), 0, 0);
+          return { date, isAllDay: false };
         }
 
-        return date;
+        return { date, isAllDay: true };
       }
     }
 
@@ -404,6 +430,22 @@ export class CalendarPlugin implements TopixPlugin {
   }
 
   /**
+   * Filter out events with excluded titles (case-insensitive)
+   */
+  private filterExcludedEvents(events: CalendarEvent[]): CalendarEvent[] {
+    if (!this.config.excludeEventTitles || this.config.excludeEventTitles.length === 0) {
+      return events;
+    }
+
+    const excludedLowerCase = this.config.excludeEventTitles.map((title) => title.toLowerCase());
+
+    return events.filter((event) => {
+      const eventTitleLower = event.title.toLowerCase();
+      return !excludedLowerCase.some((excluded) => eventTitleLower.includes(excluded));
+    });
+  }
+
+  /**
    * Format events for LLM prompt
    */
   private formatEventsForLLM(events: CalendarEvent[]): string {
@@ -432,10 +474,7 @@ export class CalendarPlugin implements TopixPlugin {
   /**
    * Generate today's upcoming appointments headline
    */
-  private async generateTodayHeadline(
-    now: Date,
-    db: TopixDatabase
-  ): Promise<Headline | null> {
+  private async generateTodayHeadline(now: Date, db: TopixDatabase): Promise<Headline | null> {
     // Fetch today's events from both calendars
     const todayEvents = await this.fetchEvents('eventsToday');
     const upcomingEvents = this.filterUpcomingEvents(todayEvents, now);
@@ -447,7 +486,7 @@ export class CalendarPlugin implements TopixPlugin {
       this.config.personalCalendar
     );
 
-    const allUpcoming = [...workEvents, ...personalEvents].sort(
+    const allUpcoming = this.filterExcludedEvents([...workEvents, ...personalEvents]).sort(
       (a, b) => a.date.getTime() - b.date.getTime()
     );
 
@@ -463,7 +502,6 @@ export class CalendarPlugin implements TopixPlugin {
         category: 'calendar',
         tags: ['today', 'appointments'],
         importanceScore: 0.3,
-        isImportant: false,
         metadata: {},
         read: false,
         starred: false,
@@ -487,6 +525,8 @@ Create a brief, natural headline:`;
     try {
       const llmService = new LLMService(db);
       headlineText = await llmService.generateText(prompt);
+      // Strip surrounding quotes if LLM included them
+      headlineText = headlineText.replace(/^["']|["']$/g, '').trim();
     } catch (error) {
       console.warn('Failed to generate AI headline for today, using fallback:', error);
       headlineText = `${allUpcoming.length} upcoming appointment${allUpcoming.length > 1 ? 's' : ''} today`;
@@ -502,7 +542,6 @@ Create a brief, natural headline:`;
       category: 'calendar',
       tags: ['today', 'appointments'],
       importanceScore: 0.7,
-      isImportant: true,
       metadata: {
         eventCount: allUpcoming.length,
       },
@@ -529,7 +568,10 @@ Create a brief, natural headline:`;
     // Filter to only weekday events (Monday-Friday, exclude weekends)
     const weekdayPersonalEvents = this.filterWeekdayEvents(upcomingPersonalEvents);
 
-    if (weekdayPersonalEvents.length === 0) {
+    // Filter out excluded event titles
+    const filteredPersonalEvents = this.filterExcludedEvents(weekdayPersonalEvents);
+
+    if (filteredPersonalEvents.length === 0) {
       return null; // Don't create headline if no personal events
     }
 
@@ -543,30 +585,34 @@ Events:
 
 Summary:`;
 
-    const prompt = promptTemplate.replace('{events}', this.formatEventsForLLM(weekdayPersonalEvents));
+    const prompt = promptTemplate.replace(
+      '{events}',
+      this.formatEventsForLLM(filteredPersonalEvents)
+    );
 
     let headlineText: string;
     try {
       const llmService = new LLMService(db);
       headlineText = await llmService.generateText(prompt);
+      // Strip surrounding quotes if LLM included them
+      headlineText = headlineText.replace(/^["']|["']$/g, '').trim();
     } catch (error) {
       console.warn('Failed to generate AI headline for personal week, using fallback:', error);
-      headlineText = `${weekdayPersonalEvents.length} personal event${weekdayPersonalEvents.length > 1 ? 's' : ''} this week`;
+      headlineText = `${filteredPersonalEvents.length} personal event${filteredPersonalEvents.length > 1 ? 's' : ''} this week`;
     }
 
     return {
       id: uuidv4(),
       pluginId: this.id,
       title: `This week at home: ${headlineText}`,
-      description: this.formatEventsForLLM(weekdayPersonalEvents),
+      description: this.formatEventsForLLM(filteredPersonalEvents),
       pubDate: now,
       createdAt: now,
       category: 'calendar',
       tags: ['personal', 'week'],
       importanceScore: 0.5,
-      isImportant: false,
       metadata: {
-        eventCount: weekdayPersonalEvents.length,
+        eventCount: filteredPersonalEvents.length,
       },
       read: false,
       starred: false,
@@ -577,10 +623,7 @@ Summary:`;
   /**
    * Generate work week overview headline
    */
-  private async generateWorkWeekHeadline(
-    now: Date,
-    db: TopixDatabase
-  ): Promise<Headline | null> {
+  private async generateWorkWeekHeadline(now: Date, db: TopixDatabase): Promise<Headline | null> {
     // Fetch next 7 days from work calendar
     const weekEvents = await this.fetchEvents('eventsToday+7');
     const workEvents = this.filterEventsByCalendar(weekEvents, this.config.workCalendar);
@@ -591,7 +634,10 @@ Summary:`;
     // Filter to only weekday events (Monday-Friday, exclude weekends)
     const weekdayWorkEvents = this.filterWeekdayEvents(upcomingWorkEvents);
 
-    if (weekdayWorkEvents.length === 0) {
+    // Filter out excluded event titles
+    const filteredWorkEvents = this.filterExcludedEvents(weekdayWorkEvents);
+
+    if (filteredWorkEvents.length === 0) {
       return null; // Don't create headline if no work events
     }
 
@@ -605,30 +651,31 @@ Events:
 
 Summary:`;
 
-    const prompt = promptTemplate.replace('{events}', this.formatEventsForLLM(weekdayWorkEvents));
+    const prompt = promptTemplate.replace('{events}', this.formatEventsForLLM(filteredWorkEvents));
 
     let headlineText: string;
     try {
       const llmService = new LLMService(db);
       headlineText = await llmService.generateText(prompt);
+      // Strip surrounding quotes if LLM included them
+      headlineText = headlineText.replace(/^["']|["']$/g, '').trim();
     } catch (error) {
       console.warn('Failed to generate AI headline for work week, using fallback:', error);
-      headlineText = `${weekdayWorkEvents.length} work event${weekdayWorkEvents.length > 1 ? 's' : ''} this week`;
+      headlineText = `${filteredWorkEvents.length} work event${filteredWorkEvents.length > 1 ? 's' : ''} this week`;
     }
 
     return {
       id: uuidv4(),
       pluginId: this.id,
       title: `This week at work: ${headlineText}`,
-      description: this.formatEventsForLLM(weekdayWorkEvents),
+      description: this.formatEventsForLLM(filteredWorkEvents),
       pubDate: now,
       createdAt: now,
       category: 'calendar',
       tags: ['work', 'week'],
       importanceScore: 0.6,
-      isImportant: true,
       metadata: {
-        eventCount: weekdayWorkEvents.length,
+        eventCount: filteredWorkEvents.length,
       },
       read: false,
       starred: false,
@@ -639,10 +686,7 @@ Summary:`;
   /**
    * Generate weekend overview headline
    */
-  private async generateWeekendHeadline(
-    now: Date,
-    db: TopixDatabase
-  ): Promise<Headline | null> {
+  private async generateWeekendHeadline(now: Date, db: TopixDatabase): Promise<Headline | null> {
     // Fetch next 7 days (to catch the upcoming weekend)
     const allEvents = await this.fetchEvents('eventsToday+7');
 
@@ -652,7 +696,10 @@ Summary:`;
     // Filter to only weekend events (Saturday and Sunday)
     const upcomingWeekendEvents = this.filterWeekendEvents(upcomingEvents);
 
-    if (upcomingWeekendEvents.length === 0) {
+    // Filter out excluded event titles
+    const filteredWeekendEvents = this.filterExcludedEvents(upcomingWeekendEvents);
+
+    if (filteredWeekendEvents.length === 0) {
       return null; // Don't create headline if no weekend events
     }
 
@@ -666,30 +713,34 @@ Events:
 
 Create a brief, natural summary:`;
 
-    const prompt = promptTemplate.replace('{events}', this.formatEventsForLLM(upcomingWeekendEvents));
+    const prompt = promptTemplate.replace(
+      '{events}',
+      this.formatEventsForLLM(filteredWeekendEvents)
+    );
 
     let headlineText: string;
     try {
       const llmService = new LLMService(db);
       headlineText = await llmService.generateText(prompt);
+      // Strip surrounding quotes if LLM included them
+      headlineText = headlineText.replace(/^["']|["']$/g, '').trim();
     } catch (error) {
       console.warn('Failed to generate AI headline for weekend, using fallback:', error);
-      headlineText = `${upcomingWeekendEvents.length} event${upcomingWeekendEvents.length > 1 ? 's' : ''} this weekend`;
+      headlineText = `${filteredWeekendEvents.length} event${filteredWeekendEvents.length > 1 ? 's' : ''} this weekend`;
     }
 
     return {
       id: uuidv4(),
       pluginId: this.id,
       title: `This weekend: ${headlineText}`,
-      description: this.formatEventsForLLM(upcomingWeekendEvents),
+      description: this.formatEventsForLLM(filteredWeekendEvents),
       pubDate: now,
       createdAt: now,
       category: 'calendar',
       tags: ['weekend'],
       importanceScore: 0.5,
-      isImportant: false,
       metadata: {
-        eventCount: upcomingWeekendEvents.length,
+        eventCount: filteredWeekendEvents.length,
       },
       read: false,
       starred: false,
@@ -711,9 +762,14 @@ Create a brief, natural summary:`;
           description: 'Calendar for personal events',
           // NO DEFAULT - user must select
         },
+        excludeEventTitles: {
+          type: 'array',
+          description: 'Event titles to exclude from headlines (case-insensitive substring match)',
+          default: [],
+        },
         llmPromptToday: {
           type: 'string',
-          description: 'Prompt for today\'s appointments summary',
+          description: "Prompt for today's appointments summary",
           default: `Summarize these upcoming appointments for today in one concise sentence. Focus on what's important and urgent. Keep it brief and natural.
 
 Events:
@@ -775,6 +831,14 @@ Create a brief, natural summary:`,
 
     if (cfg.workCalendar === cfg.personalCalendar) {
       errors.push('Work and personal calendars should be different');
+    }
+
+    if (cfg.excludeEventTitles) {
+      if (!Array.isArray(cfg.excludeEventTitles)) {
+        errors.push('excludeEventTitles must be an array');
+      } else if (!cfg.excludeEventTitles.every((item: any) => typeof item === 'string')) {
+        errors.push('All items in excludeEventTitles must be strings');
+      }
     }
 
     if (cfg.llmPromptToday && typeof cfg.llmPromptToday !== 'string') {

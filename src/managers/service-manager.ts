@@ -135,13 +135,17 @@ export class ServiceManager {
     this.app.get('/api/headlines', (req: Request, res: Response) => {
       const limit = parseInt(req.query.limit as string) || 50;
       const offset = parseInt(req.query.offset as string) || 0;
-      const isImportant = req.query.important === 'true' ? true : undefined;
+      const important = req.query.important === 'true';
 
-      const headlines = this.db.getHeadlines({
-        limit,
-        offset,
-        isImportant,
-      });
+      const options: any = { limit, offset };
+
+      // Apply importance threshold if filtering for important headlines
+      if (important) {
+        const importanceConfig = this.configManager.getImportanceConfig();
+        options.minImportanceScore = importanceConfig.defaultThreshold;
+      }
+
+      const headlines = this.db.getHeadlines(options);
 
       res.json(headlines);
     });
@@ -579,9 +583,10 @@ export class ServiceManager {
    */
   private async generateRSSFeed(): Promise<string> {
     const config = this.configManager.getFeedConfig();
+    const importanceConfig = this.configManager.getImportanceConfig();
     const headlines = this.db.getHeadlines({
       limit: config.maxItems,
-      isImportant: true,
+      minImportanceScore: importanceConfig.defaultThreshold,
       archived: false,
     });
 

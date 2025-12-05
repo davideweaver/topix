@@ -626,17 +626,26 @@ program
   .command('headlines')
   .description('List recent headlines')
   .option('--all', 'Include filtered headlines')
+  .option('--detail', 'Show detailed information')
   .option('--category <category>', 'Filter by category')
   .option('--limit <n>', 'Limit number of headlines', '20')
   .action((options: any) => {
     try {
       const db = getDatabase();
+      const configManager = getConfigManager();
+      const importanceConfig = configManager.getImportanceConfig();
 
-      const headlines = db.getHeadlines({
+      const queryOptions: any = {
         limit: parseInt(options.limit),
         category: options.category,
-        isImportant: options.all ? undefined : true,
-      });
+      };
+
+      // Apply importance threshold if not showing all headlines
+      if (!options.all) {
+        queryOptions.minImportanceScore = importanceConfig.defaultThreshold;
+      }
+
+      const headlines = db.getHeadlines(queryOptions);
 
       if (headlines.length === 0) {
         console.log('No headlines found');
@@ -644,17 +653,24 @@ program
         return;
       }
 
-      console.log(`📰 ${options.all ? 'All' : 'Important'} headlines:\n`);
+      if (options.detail) {
+        // Detailed view
+        console.log(`📰 ${options.all ? 'All' : 'Important'} headlines:\n`);
 
-      for (const headline of headlines) {
-        const important = headline.isImportant ? '⭐' : '  ';
-        const read = headline.read ? '✓' : ' ';
-        console.log(`${important}[${read}] ${headline.title}`);
-        console.log(`   ${headline.category} | ${headline.pubDate.toLocaleString()}`);
-        if (headline.description) {
-          console.log(`   ${headline.description.substring(0, 100)}${headline.description.length > 100 ? '...' : ''}`);
+        for (const headline of headlines) {
+          const read = headline.read ? '✓' : ' ';
+          console.log(`[${read}] ${headline.title}`);
+          console.log(`   Score: ${headline.importanceScore.toFixed(2)} | Category: ${headline.category} | ${headline.pubDate.toLocaleString()}`);
+          if (headline.description) {
+            console.log(`   ${headline.description}`);
+          }
+          console.log();
         }
-        console.log();
+      } else {
+        // Simple view - just titles
+        for (const headline of headlines) {
+          console.log(headline.title);
+        }
       }
 
       db.close();

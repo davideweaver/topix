@@ -109,7 +109,6 @@ export interface Headline {
   // Importance scoring
   importanceScore: number; // 0.0 - 1.0 (LLM-generated)
   importanceReason?: string; // Why it's important (LLM)
-  isImportant: boolean; // Above threshold?
 
   // Metadata
   metadata: Record<string, any>; // Plugin-specific data

@@ -106,10 +106,10 @@ export class TopixDatabase {
     const stmt = this.db.prepare(`
       INSERT INTO headlines (
         id, plugin_id, title, description, link, pub_date, created_at,
-        category, tags, importance_score, importance_reason, is_important,
+        category, tags, importance_score, importance_reason,
         metadata, read, starred, archived
       ) VALUES (
-        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
       )
     `);
 
@@ -125,7 +125,6 @@ export class TopixDatabase {
       JSON.stringify(headline.tags),
       headline.importanceScore || null,
       headline.importanceReason || null,
-      headline.isImportant ? 1 : 0,
       JSON.stringify(headline.metadata),
       headline.read ? 1 : 0,
       headline.starred ? 1 : 0,
@@ -141,7 +140,7 @@ export class TopixDatabase {
     offset?: number;
     category?: string;
     pluginId?: string;
-    isImportant?: boolean;
+    minImportanceScore?: number;
     archived?: boolean;
   } = {}): Headline[] {
     const {
@@ -149,7 +148,7 @@ export class TopixDatabase {
       offset = 0,
       category,
       pluginId,
-      isImportant,
+      minImportanceScore,
       archived = false,
     } = options;
 
@@ -166,9 +165,9 @@ export class TopixDatabase {
       params.push(pluginId);
     }
 
-    if (isImportant !== undefined) {
-      sql += ' AND is_important = ?';
-      params.push(isImportant ? 1 : 0);
+    if (minImportanceScore !== undefined) {
+      sql += ' AND importance_score >= ?';
+      params.push(minImportanceScore);
     }
 
     sql += ' ORDER BY created_at DESC LIMIT ? OFFSET ?';
@@ -597,7 +596,6 @@ Response format (JSON):
       tags: JSON.parse(row.tags) as string[],
       importanceScore: row.importance_score || 0,
       importanceReason: row.importance_reason || undefined,
-      isImportant: row.is_important === 1,
       metadata: JSON.parse(row.metadata) as Record<string, any>,
       read: row.read === 1,
       starred: row.starred === 1,
